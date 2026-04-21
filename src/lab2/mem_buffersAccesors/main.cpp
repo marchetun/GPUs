@@ -14,7 +14,7 @@ int main(int argc, char **argv) {
     int N = std::stoi(argv[1]);
 
     // sycl::gpu_selector_v es la forma correcta en SYCL 2020
-    queue Q(gpu_selector_v);
+    queue Q(cpu_selector_v);
 
     std::cout << "Running on: "
               << Q.get_device().get_info<info::device::name>()

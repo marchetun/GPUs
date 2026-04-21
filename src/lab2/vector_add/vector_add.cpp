@@ -18,9 +18,9 @@ int main(int argc, char **argv) {
 		<< std::endl;
 
 
-	int *a; //TODO: create vectors with USM
-	int *b; //TODO: create vectors with USM
-	int *c; //TODO: create vectors with USM
+	int *a = malloc_shared<int>(N, Q);
+	int *b = malloc_shared<int>(N, Q);
+	int *c = malloc_shared<int>(N, Q);
 
 	// Parallel for
 	for(int i=0; i<N; i++){
@@ -31,8 +31,13 @@ int main(int argc, char **argv) {
 
 	// Create a kernel to perform c=a+b
 	Q.submit([&](handler &h) { 
-		/* To Do!!! */
-	});
+		
+		h.parallel_for(range<1>(N), [=](id<1> item){
+			auto i = item[0];
+			c[i] = a[i] + b[i];
+		});
+
+	}).wait();
 
 	for(int i=0; i<N; i++)
 		std::cout << "c[" << i << "] = " << c[i] << std::endl;

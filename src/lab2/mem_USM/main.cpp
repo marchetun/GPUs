@@ -11,7 +11,7 @@ int main(int argc, char **argv) {
 
 	int N = atoi(argv[1]);
 
-	sycl::queue Q(sycl::gpu_selector_v);
+	sycl::queue Q(sycl::cpu_selector_v);
 
 	std::cout << "Running on "
 		<< Q.get_device().get_info<sycl::info::device::name>()
@@ -19,7 +19,7 @@ int main(int argc, char **argv) {
 
 
 	// a in USM
-	float *a; // To fill with malloc_shared
+	float *a = malloc_shared<float>(N, Q); // To fill with malloc_shared
 
 	// Parallel for
 	for(int i=0; i<N; i++)
