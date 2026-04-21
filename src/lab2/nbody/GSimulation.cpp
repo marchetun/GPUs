@@ -21,7 +21,7 @@
 #include "GSimulation.hpp"
 #include "cpu_time.hpp"
 
-GSimulation :: GSimulation()
+GSimulation :: GSimulation(sycl::queue Q)
 {
   std::cout << "===============================" << std::endl;
   std::cout << " Initialize Gravity Simulation" << std::endl;
@@ -29,6 +29,7 @@ GSimulation :: GSimulation()
   set_nsteps(10);
   set_tstep(0.1); 
   set_sfreq(1);
+  _Q = Q;//añadimos la cola
 }
 
 void GSimulation :: set_number_of_particles(int N)  
@@ -92,76 +93,135 @@ void GSimulation :: init_mass()
   }
 }
 
-void GSimulation :: get_acceleration(int n)
+void GSimulation::get_acceleration(int n)
 {
-   int i,j;
+    // Extraemos el puntero como en el updateParticles
+    auto *particles_ptr = this->particles;
+    const float softeningSquared = 1e-3f;
+    const float G = 6.67259e-11f;
 
-   const float softeningSquared = 1e-3f;
-   const float G = 6.67259e-11f;
+    _Q.submit([&](sycl::handler &h) {
+        // Tamaño del bloque
+        const int B = 256; 
+        
+        // Declaramos el Local Accessor
+        sycl::local_accessor<real_type, 1> cache_pos_x(sycl::range<1>(B), h);
+        sycl::local_accessor<real_type, 1> cache_pos_y(sycl::range<1>(B), h);
+        sycl::local_accessor<real_type, 1> cache_pos_z(sycl::range<1>(B), h);
+        sycl::local_accessor<real_type, 1> cache_mass(sycl::range<1>(B), h);
 
-   for (i = 0; i < n; i++)// update acceleration
-   {
-     real_type ax_i = particles[i].acc[0];
-     real_type ay_i = particles[i].acc[1];
-     real_type az_i = particles[i].acc[2];
-     for (j = 0; j < n; j++)
-     {
-         real_type dx, dy, dz;
-	 real_type distanceSqr = 0.0f;
-	 real_type distanceInv = 0.0f;
-		  
-	 dx = particles[j].pos[0] - particles[i].pos[0];	//1flop
-	 dy = particles[j].pos[1] - particles[i].pos[1];	//1flop	
-	 dz = particles[j].pos[2] - particles[i].pos[2];	//1flop
-	
- 	 distanceSqr = dx*dx + dy*dy + dz*dz + softeningSquared;	//6flops
- 	 distanceInv = 1.0f / sqrtf(distanceSqr);			//1div+1sqrt
+        // Definimos el nd_range: global y local
+        sycl::nd_range<1> range{sycl::range<1>(n), sycl::range<1>(B)};
 
-	 ax_i += dx * G * particles[j].mass * distanceInv * distanceInv * distanceInv; //6flops
-	 ay_i += dy * G * particles[j].mass * distanceInv * distanceInv * distanceInv; //6flops
-	 az_i += dz * G * particles[j].mass * distanceInv * distanceInv * distanceInv; //6flops
-     }
-     particles[i].acc[0] = ax_i;
-     particles[i].acc[1] = ay_i;
-     particles[i].acc[2] = az_i;
-   }
+        h.parallel_for(range, [=](sycl::nd_item<1> item) {
+            int i = item.get_global_id(0);
+            int local_id = item.get_local_id(0);
+
+            // Variables en registros para acumular la aceleración
+            real_type ax_i = 0.0f;
+            real_type ay_i = 0.0f;
+            real_type az_i = 0.0f;
+
+            // Guardamos la posición de la partícula i en registros locales
+            real_type pos_i_x = particles_ptr[i].pos[0];
+            real_type pos_i_y = particles_ptr[i].pos[1];
+            real_type pos_i_z = particles_ptr[i].pos[2];
+
+            // Bucle externo por Bloques 
+            for (int j_block = 0; j_block < n; j_block += B) {
+                
+                // Carga cooperativa al cache local
+                int j_global = j_block + local_id;
+                cache_pos_x[local_id] = particles_ptr[j_global].pos[0];
+                cache_pos_y[local_id] = particles_ptr[j_global].pos[1];
+                cache_pos_z[local_id] = particles_ptr[j_global].pos[2];
+                cache_mass[local_id]  = particles_ptr[j_global].mass;
+
+                // Esperamos a que todos hayan cargado
+                item.barrier(sycl::access::fence_space::local_space);
+
+                // Cómputo usando la memoria local
+                for (int j = 0; j < B; j++) {
+                    real_type dx = cache_pos_x[j] - pos_i_x;
+                    real_type dy = cache_pos_y[j] - pos_i_y;
+                    real_type dz = cache_pos_z[j] - pos_i_z;
+
+                    real_type distSqr = dx*dx + dy*dy + dz*dz + softeningSquared;
+                    real_type invDist = 1.0f / sycl::sqrt(distSqr);
+                    real_type invDist3 = invDist * invDist * invDist;
+
+                    real_type s = cache_mass[j] * G * invDist3;
+                    ax_i += dx * s;
+                    ay_i += dy * s;
+                    az_i += dz * s;
+                }
+
+                // Esperamos antes de cargar el siguiente bloque
+                item.barrier(sycl::access::fence_space::local_space);
+            }
+
+            // Escritura única a memoria global
+            particles_ptr[i].acc[0] = ax_i;
+            particles_ptr[i].acc[1] = ay_i;
+            particles_ptr[i].acc[2] = az_i;
+        });
+    }).wait();
 }
-
-real_type GSimulation :: updateParticles(int n, real_type dt)
+real_type GSimulation::updateParticles(int n, real_type dt)
 {
-   int i;
-   real_type energy = 0;
+    // Reserva memoria shared, quizas podría funcionar con memoria local si ejecuto en cpu
+    real_type *energy_ptr = sycl::malloc_shared<real_type>(1, _Q);
+    *energy_ptr = 0.0f; // Inicialización con literal float para evitar conflictos de tipos
 
-   for (i = 0; i < n; ++i)// update position
-   {
-     particles[i].vel[0] += particles[i].acc[0] * dt; //2flops
-     particles[i].vel[1] += particles[i].acc[1] * dt; //2flops
-     particles[i].vel[2] += particles[i].acc[2] * dt; //2flops
-	  
-     particles[i].pos[0] += particles[i].vel[0] * dt; //2flops
-     particles[i].pos[1] += particles[i].vel[1] * dt; //2flops
-     particles[i].pos[2] += particles[i].vel[2] * dt; //2flops
+    //Extraemos el puntero a una variable local, no pudo acceder a this desde el kernel
+    auto *particles_ptr = this->particles; // ya tiene malloc shared
 
-     particles[i].acc[0] = 0.;
-     particles[i].acc[1] = 0.;
-     particles[i].acc[2] = 0.;
-	
-     energy += particles[i].mass * (
-	      particles[i].vel[0]*particles[i].vel[0] + 
-               particles[i].vel[1]*particles[i].vel[1] +
-               particles[i].vel[2]*particles[i].vel[2]); //7flops
-   }
-   return energy;
+    _Q.submit([&](sycl::handler &h) {
+        // Definimos el objeto de reducción. 
+        // Usamos 0.0f para coincidir con el tipo real_type.
+        auto red = sycl::reduction(energy_ptr, 0.0f, sycl::plus<>());
+
+        h.parallel_for(sycl::range<1>(n), red, [=](sycl::id<1> id, auto &reducer) {
+            int i = id[0];
+
+            // Cómputo de los hilos
+            particles_ptr[i].vel[0] += particles_ptr[i].acc[0] * dt;
+            particles_ptr[i].vel[1] += particles_ptr[i].acc[1] * dt;
+            particles_ptr[i].vel[2] += particles_ptr[i].acc[2] * dt;
+
+            particles_ptr[i].pos[0] += particles_ptr[i].vel[0] * dt;
+            particles_ptr[i].pos[1] += particles_ptr[i].vel[1] * dt;
+            particles_ptr[i].pos[2] += particles_ptr[i].vel[2] * dt;
+
+            particles_ptr[i].acc[0] = 0.0f;
+            particles_ptr[i].acc[1] = 0.0f;
+            particles_ptr[i].acc[2] = 0.0f;
+
+            // Cálculo de energía para la reducción
+            real_type energy_thread = particles_ptr[i].mass * (
+                particles_ptr[i].vel[0] * particles_ptr[i].vel[0] +
+                particles_ptr[i].vel[1] * particles_ptr[i].vel[1] +
+                particles_ptr[i].vel[2] * particles_ptr[i].vel[2]);
+
+            // Aplicamo reducción usando el reducer
+            reducer.combine(energy_thread);
+        });
+    }).wait(); // Esperamos a que la GPU termine antes de leer el resultado.
+
+    //Recuperamos el valor y liberamos la memoria temporal
+    real_type total_energy = *energy_ptr;
+    sycl::free(energy_ptr, _Q);
+
+    return total_energy;
 }
-
 void GSimulation :: start() 
 {
   real_type energy;
   real_type dt = get_tstep();
   int n = get_npart();
 
-  //allocate particles
-  particles = new ParticleAoS[n];
+  //allocate particles, ahora reservamos con memoria compartida, aunque si ejecutamos en cpu podría funcionar
+  particles = sycl::malloc_shared<ParticleAoS>(n, _Q);
 
   init_pos();
   init_vel();
@@ -253,5 +313,5 @@ void GSimulation :: print_header()
 
 GSimulation :: ~GSimulation()
 {
-  delete particles;
+  sycl::free(particles, _Q);
 }

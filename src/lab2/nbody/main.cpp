@@ -26,9 +26,12 @@ int main(int argc, char** argv)
 {
   int N;			//number of particles
   int nstep; 		//number ot integration steps
+  //Creamos la cola y asignamos el device
+  sycl::device d = sycl::device(sycl::cpu_selector_v);//Seleccionamos cpu, gpu no disponible por drivers de nvidia
+  sycl::queue Q;//Pasamos la cola al GSimulation
+
+  GSimulation sim(Q);
   
-  GSimulation sim;
-    
   if(argc>1)
   {
     N=atoi(argv[1]);
@@ -40,6 +43,7 @@ int main(int argc, char** argv)
     }
   }
   
+
   sim.start();
 
   return 0;

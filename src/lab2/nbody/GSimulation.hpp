@@ -28,13 +28,13 @@
 #include <string>
 #include <sstream>
 #include <stdlib.h>
-
+#include <sycl/sycl.hpp>
 #include "Particle.hpp"
 
 class GSimulation 
 {
 public:
-  GSimulation();
+  GSimulation(sycl::queue Q);
   ~GSimulation();
   
   void init();
@@ -44,7 +44,7 @@ public:
   
 private:
   ParticleAoS *particles;
-  
+  sycl::queue _Q; // Atributo para gestionar la memoria y kernels
   int       _npart;		//number of particles
   int	    _nsteps;		//number of integration steps
   real_type _tstep;		//time step of the simulation
@@ -61,7 +61,7 @@ private:
   void init_acc();
   void init_mass();
 
-  void get_acceleration(int n);
+  void get_acceleration(int n);//esta era getforces
   real_type updateParticles(int n, real_type dt);
     
   inline void set_npart(const int &N){ _npart = N; }
