@@ -8,8 +8,13 @@
       "args": [],
       "stopAtEntry": false,
       "externalConsole": false,
+<<<<<<< HEAD
       "cwd": "/home/marchetun/Documentos/Practicas/GPUs/src/lab2/helloWorld",
       "program": "/home/marchetun/Documentos/Practicas/GPUs/src/lab2/helloWorld/build/Debug/outDebug",
+=======
+      "cwd": "/home/march/Documentos/Practicas/GPUs/src/lab2/helloWorld",
+      "program": "/home/march/Documentos/Practicas/GPUs/src/lab2/helloWorld/build/Debug/outDebug",
+>>>>>>> e2061d2780da72f74c1c803760e45559a84a7e5f
       "MIMode": "gdb",
       "miDebuggerPath": "gdb",
       "setupCommands": [
